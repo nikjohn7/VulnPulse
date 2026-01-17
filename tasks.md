@@ -7,11 +7,10 @@
 ## Task Queue
 
 ### CURRENT
-_(none - start with Task 0.1)_
+- 0.2: Create Requirements Files
 
 ### TODO
-- 0.1: Initialize Repository Structure
-- 0.2: Create Requirements Files
+- 0.3: Create Main README
 - 0.3: Create Main README
 - 0.4: Create Makefile
 - 1.1: Create NVD Fetcher
@@ -42,7 +41,7 @@ _(none - start with Task 0.1)_
 - 6.3: Create Demo Script and Final Docs
 
 ### DONE
-_(none yet)_
+- 0.1: Initialize Repository Structure ✓
 
 ---
 
