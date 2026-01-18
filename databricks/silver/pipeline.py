@@ -10,12 +10,15 @@
 # MAGIC |-------|-------------|--------|
 # MAGIC | `cve_core` | Core CVE metadata (ID, description, CVSS, CWE) | `nvd_raw` |
 # MAGIC | `cve_signals` | Risk signals (EPSS scores, KEV status) | `epss_raw`, `kev_raw` |
+# MAGIC | `cve_affected_products` | Affected vendors/products from CPE data | `nvd_raw` |
 # MAGIC 
 # MAGIC ## Data Quality Expectations
 # MAGIC - `valid_cve_id`: CVE ID must not be null
 # MAGIC - `valid_cve_format`: CVE ID must match pattern `CVE-YYYY-NNNNN`
 # MAGIC - `has_description`: Description must not be null (records dropped if violated)
 # MAGIC - `valid_epss_range`: EPSS score must be between 0 and 1 (or null)
+# MAGIC - `valid_cpe_uri`: CPE URI must not be null
+# MAGIC - `has_vendor`: Vendor must not be null (records dropped if violated)
 
 # COMMAND ----------
 
@@ -130,6 +133,30 @@ kev_vuln_schema = StructType([
     StructField("knownRansomwareCampaignUse", StringType(), True),
     StructField("notes", StringType(), True),
     StructField("shortDescription", StringType(), True)
+])
+
+# Define schema for parsing NVD configurations/CPE data
+# NVD API 2.0 format: cve.configurations[].nodes[].cpeMatch[]
+# CPE 2.3 URI format: cpe:2.3:part:vendor:product:version:update:edition:language:sw_edition:target_sw:target_hw:other
+nvd_cpe_schema = StructType([
+    StructField("cve", StructType([
+        StructField("id", StringType(), True),
+        StructField("configurations", ArrayType(StructType([
+            StructField("nodes", ArrayType(StructType([
+                StructField("operator", StringType(), True),
+                StructField("negate", BooleanType(), True),
+                StructField("cpeMatch", ArrayType(StructType([
+                    StructField("vulnerable", BooleanType(), True),
+                    StructField("criteria", StringType(), True),
+                    StructField("matchCriteriaId", StringType(), True),
+                    StructField("versionStartIncluding", StringType(), True),
+                    StructField("versionStartExcluding", StringType(), True),
+                    StructField("versionEndIncluding", StringType(), True),
+                    StructField("versionEndExcluding", StringType(), True)
+                ])), True)
+            ])), True)
+        ])), True)
+    ]), True)
 ])
 
 # COMMAND ----------
@@ -386,6 +413,170 @@ def cve_signals():
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## CVE Affected Products Table
+# MAGIC 
+# MAGIC Extracts CPE (Common Platform Enumeration) data from NVD configurations to identify
+# MAGIC affected vendors and products for each CVE.
+# MAGIC 
+# MAGIC **CPE 2.3 URI Format**: `cpe:2.3:part:vendor:product:version:update:edition:language:sw_edition:target_sw:target_hw:other`
+# MAGIC 
+# MAGIC **Deduplication Strategy**: Keep unique combinations of `cve_id + cpe_uri`.
+
+# COMMAND ----------
+
+@dlt.table(
+    name="cve_affected_products",
+    comment="Affected vendors and products extracted from NVD CPE configurations. Only includes vulnerable=true CPEs.",
+    table_properties={
+        "quality": "silver",
+        "pipelines.autoOptimize.managed": "true"
+    }
+)
+@dlt.expect("valid_cve_id", "cve_id IS NOT NULL")
+@dlt.expect("valid_cpe_uri", "cpe_uri IS NOT NULL")
+@dlt.expect_or_drop("has_vendor", "vendor IS NOT NULL")
+def cve_affected_products():
+    """
+    Creates the cve_affected_products Silver table from NVD raw data.
+    
+    Extracts CPE data from NVD configurations.nodes.cpeMatch and parses
+    the CPE 2.3 URI to extract vendor, product, and version information.
+    
+    Extracts:
+    - cve_id: CVE identifier
+    - cpe_uri: Full CPE 2.3 URI string
+    - vendor: Vendor name extracted from CPE URI
+    - product: Product name extracted from CPE URI
+    - version: Version string extracted from CPE URI
+    
+    Filters:
+    - Only includes CPEs where vulnerable=true
+    
+    Deduplication: Keeps unique combinations of cve_id + cpe_uri.
+    """
+    
+    # Read from Bronze NVD raw table
+    raw_df = spark.table(NVD_RAW_TABLE)
+    
+    # Parse the raw_json column using the CPE schema
+    parsed_df = raw_df.withColumn(
+        "parsed",
+        F.from_json(F.col("raw_json"), nvd_cpe_schema)
+    )
+    
+    # Extract CVE ID and configurations
+    cve_configs_df = parsed_df.select(
+        F.coalesce(
+            F.col("parsed.cve.id"),
+            F.col("cve_id")
+        ).alias("cve_id"),
+        F.col("parsed.cve.configurations").alias("configurations"),
+        F.col("ingest_ts")
+    )
+    
+    # Explode configurations array to get individual configuration objects
+    configs_exploded_df = cve_configs_df.select(
+        F.col("cve_id"),
+        F.explode_outer(F.col("configurations")).alias("config"),
+        F.col("ingest_ts")
+    )
+    
+    # Explode nodes array within each configuration
+    nodes_exploded_df = configs_exploded_df.select(
+        F.col("cve_id"),
+        F.explode_outer(F.col("config.nodes")).alias("node"),
+        F.col("ingest_ts")
+    )
+    
+    # Explode cpeMatch array within each node
+    cpe_exploded_df = nodes_exploded_df.select(
+        F.col("cve_id"),
+        F.explode_outer(F.col("node.cpeMatch")).alias("cpe_match"),
+        F.col("ingest_ts")
+    )
+    
+    # Filter for vulnerable=true CPEs only and extract CPE URI
+    vulnerable_cpes_df = cpe_exploded_df.filter(
+        F.col("cpe_match.vulnerable") == True
+    ).select(
+        F.col("cve_id"),
+        F.col("cpe_match.criteria").alias("cpe_uri"),
+        F.col("ingest_ts")
+    )
+    
+    # Parse CPE 2.3 URI to extract vendor, product, version
+    # CPE 2.3 format: cpe:2.3:part:vendor:product:version:update:edition:language:sw_edition:target_sw:target_hw:other
+    # Index:          0   1   2    3      4       5       6      7       8        9          10        11       12
+    # We need: vendor (index 3), product (index 4), version (index 5)
+    parsed_cpe_df = vulnerable_cpes_df.withColumn(
+        "cpe_parts",
+        F.split(F.col("cpe_uri"), ":")
+    ).select(
+        F.col("cve_id"),
+        F.col("cpe_uri"),
+        # Extract vendor (index 3) - handle cases where CPE might be malformed
+        F.when(
+            F.size(F.col("cpe_parts")) > 3,
+            F.col("cpe_parts")[3]
+        ).otherwise(F.lit(None)).alias("vendor"),
+        # Extract product (index 4)
+        F.when(
+            F.size(F.col("cpe_parts")) > 4,
+            F.col("cpe_parts")[4]
+        ).otherwise(F.lit(None)).alias("product"),
+        # Extract version (index 5)
+        F.when(
+            F.size(F.col("cpe_parts")) > 5,
+            F.col("cpe_parts")[5]
+        ).otherwise(F.lit(None)).alias("version"),
+        F.col("ingest_ts")
+    )
+    
+    # Clean up vendor/product/version values
+    # Replace '*' (wildcard) and '-' (not applicable) with null for cleaner data
+    cleaned_df = parsed_cpe_df.select(
+        F.col("cve_id"),
+        F.col("cpe_uri"),
+        F.when(
+            (F.col("vendor") == "*") | (F.col("vendor") == "-") | (F.col("vendor") == ""),
+            F.lit(None)
+        ).otherwise(F.col("vendor")).alias("vendor"),
+        F.when(
+            (F.col("product") == "*") | (F.col("product") == "-") | (F.col("product") == ""),
+            F.lit(None)
+        ).otherwise(F.col("product")).alias("product"),
+        F.when(
+            (F.col("version") == "*") | (F.col("version") == "-") | (F.col("version") == ""),
+            F.lit(None)
+        ).otherwise(F.col("version")).alias("version"),
+        F.col("ingest_ts")
+    )
+    
+    # Deduplicate: Keep unique combinations of cve_id + cpe_uri
+    # Use window function to keep the latest record for each unique combination
+    window_spec = Window.partitionBy("cve_id", "cpe_uri").orderBy(F.col("ingest_ts").desc())
+    
+    deduplicated_df = cleaned_df.withColumn(
+        "row_num",
+        F.row_number().over(window_spec)
+    ).filter(
+        F.col("row_num") == 1
+    ).drop("row_num", "ingest_ts")
+    
+    # Select final columns in the desired order
+    final_df = deduplicated_df.select(
+        "cve_id",
+        "cpe_uri",
+        "vendor",
+        "product",
+        "version"
+    )
+    
+    return final_df
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Pipeline Summary
 # MAGIC 
 # MAGIC This DLT pipeline creates the following Silver tables:
@@ -394,6 +585,7 @@ def cve_signals():
 # MAGIC |-------|-------------|--------|---------------------|
 # MAGIC | `cve_core` | Core CVE metadata (ID, description, CVSS, CWE) | `nvd_raw` | valid_cve_id, valid_cve_format, has_description |
 # MAGIC | `cve_signals` | Risk signals (EPSS scores, KEV status) | `epss_raw`, `kev_raw` | valid_epss_range |
+# MAGIC | `cve_affected_products` | Affected vendors/products from CPE data | `nvd_raw` | valid_cve_id, valid_cpe_uri, has_vendor |
 # MAGIC 
 # MAGIC ### Data Quality Expectations
 # MAGIC 
@@ -403,9 +595,11 @@ def cve_signals():
 # MAGIC | `cve_core` | `valid_cve_format` | `cve_id RLIKE '^CVE-[0-9]{4}-[0-9]+$'` | expect | CVE IDs must follow standard format |
 # MAGIC | `cve_core` | `has_description` | `description IS NOT NULL` | expect_or_drop | Records without descriptions are not useful |
 # MAGIC | `cve_signals` | `valid_epss_range` | `epss_score IS NULL OR (epss_score >= 0 AND epss_score <= 1)` | expect | EPSS scores must be valid probabilities |
+# MAGIC | `cve_affected_products` | `valid_cve_id` | `cve_id IS NOT NULL` | expect | Every record must have a CVE ID |
+# MAGIC | `cve_affected_products` | `valid_cpe_uri` | `cpe_uri IS NOT NULL` | expect | Every record must have a CPE URI |
+# MAGIC | `cve_affected_products` | `has_vendor` | `vendor IS NOT NULL` | expect_or_drop | Records without vendor are not useful for product analysis |
 # MAGIC 
 # MAGIC ### Next Steps
 # MAGIC 
 # MAGIC Future tasks will add additional Silver tables:
-# MAGIC - `cve_affected_products`: CPE data parsed to vendor/product
 # MAGIC - `cve_documents`: Denormalized text for Vector Search
