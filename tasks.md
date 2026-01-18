@@ -7,11 +7,9 @@
 ## Task Queue
 
 ### CURRENT
-- 2.1: Create Unity Catalog Setup Script
+- 3.1: Create Silver DLT Pipeline - CVE Core
 
 ### TODO
-- 2.2: Create Bronze Ingestion Notebook
-- 3.1: Create Silver DLT Pipeline - CVE Core
 - 3.2: Add Silver DLT Pipeline - CVE Signals
 - 3.3: Add Silver DLT Pipeline - CVE Affected Products
 - 3.4: Add Silver DLT Pipeline - CVE Documents
@@ -41,6 +39,8 @@
 - 1.2: Create KEV Fetcher ✓
 - 1.3: Create EPSS Fetcher ✓
 - 1.4: Create Unified Fetch Script ✓
+- 2.1: Create Unity Catalog Setup Script ✓
+- 2.2: Create Bronze Ingestion Notebook ✓
 
 ---
 
