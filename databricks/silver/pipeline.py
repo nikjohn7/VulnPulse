@@ -9,11 +9,13 @@
 # MAGIC | Table | Description | Source |
 # MAGIC |-------|-------------|--------|
 # MAGIC | `cve_core` | Core CVE metadata (ID, description, CVSS, CWE) | `nvd_raw` |
+# MAGIC | `cve_signals` | Risk signals (EPSS scores, KEV status) | `epss_raw`, `kev_raw` |
 # MAGIC 
 # MAGIC ## Data Quality Expectations
 # MAGIC - `valid_cve_id`: CVE ID must not be null
 # MAGIC - `valid_cve_format`: CVE ID must match pattern `CVE-YYYY-NNNNN`
 # MAGIC - `has_description`: Description must not be null (records dropped if violated)
+# MAGIC - `valid_epss_range`: EPSS score must be between 0 and 1 (or null)
 
 # COMMAND ----------
 
@@ -44,11 +46,13 @@ SILVER_SCHEMA = "silver"
 
 # Source tables
 NVD_RAW_TABLE = f"{CATALOG}.{BRONZE_SCHEMA}.nvd_raw"
+KEV_RAW_TABLE = f"{CATALOG}.{BRONZE_SCHEMA}.kev_raw"
+EPSS_RAW_TABLE = f"{CATALOG}.{BRONZE_SCHEMA}.epss_raw"
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Schema Definitions for NVD API 2.0 JSON Parsing
+# MAGIC ## Schema Definitions for JSON Parsing
 # MAGIC 
 # MAGIC The NVD API 2.0 has a different structure than the legacy 1.1 format.
 # MAGIC Key paths:
@@ -60,12 +64,21 @@ NVD_RAW_TABLE = f"{CATALOG}.{BRONZE_SCHEMA}.nvd_raw"
 # MAGIC - CVSS v3.0: `cve.metrics.cvssMetricV30[0].cvssData.*`
 # MAGIC - CVSS v2: `cve.metrics.cvssMetricV2[0].cvssData.baseScore`
 # MAGIC - CWE: `cve.weaknesses[].description[].value`
+# MAGIC 
+# MAGIC ### KEV JSON Structure
+# MAGIC Key paths:
+# MAGIC - CVE ID: `cveID`
+# MAGIC - Date Added: `dateAdded`
+# MAGIC - Due Date: `dueDate`
+# MAGIC - Ransomware Use: `knownRansomwareCampaignUse`
+# MAGIC - Notes: `notes`
+# MAGIC - Vendor: `vendorProject`
+# MAGIC - Product: `product`
 
 # COMMAND ----------
 
 # Define schema for parsing the nested NVD JSON structure
 # This schema covers the fields we need to extract
-
 nvd_cve_schema = StructType([
     StructField("cve", StructType([
         StructField("id", StringType(), True),
@@ -104,6 +117,19 @@ nvd_cve_schema = StructType([
             ])), True)
         ])), True)
     ]), True)
+])
+
+# Define schema for parsing KEV JSON structure
+kev_vuln_schema = StructType([
+    StructField("cveID", StringType(), True),
+    StructField("vendorProject", StringType(), True),
+    StructField("product", StringType(), True),
+    StructField("vulnerabilityName", StringType(), True),
+    StructField("dateAdded", StringType(), True),
+    StructField("dueDate", StringType(), True),
+    StructField("knownRansomwareCampaignUse", StringType(), True),
+    StructField("notes", StringType(), True),
+    StructField("shortDescription", StringType(), True)
 ])
 
 # COMMAND ----------
@@ -238,25 +264,148 @@ def cve_core():
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## CVE Signals Table
+# MAGIC 
+# MAGIC Combines EPSS scores and KEV (Known Exploited Vulnerabilities) status for each CVE.
+# MAGIC 
+# MAGIC **Data Sources**:
+# MAGIC - `epss_raw`: EPSS probability scores and percentiles
+# MAGIC - `kev_raw`: CISA Known Exploited Vulnerabilities catalog
+# MAGIC 
+# MAGIC **Deduplication Strategy**: Keep the latest record per CVE ID based on `ingest_ts` for both sources.
+
+# COMMAND ----------
+
+@dlt.table(
+    name="cve_signals",
+    comment="CVE risk signals combining EPSS scores and KEV status. Deduplicated to keep latest record per CVE ID.",
+    table_properties={
+        "quality": "silver",
+        "pipelines.autoOptimize.managed": "true"
+    }
+)
+@dlt.expect("valid_epss_range", "epss_score IS NULL OR (epss_score >= 0 AND epss_score <= 1)")
+def cve_signals():
+    """
+    Creates the cve_signals Silver table by joining EPSS and KEV data.
+    
+    Extracts:
+    - cve_id: CVE identifier
+    - epss_score: EPSS probability score (0-1)
+    - epss_percentile: EPSS percentile ranking
+    - kev_flag: Boolean indicating if CVE is in CISA KEV catalog
+    - kev_date_added: Date CVE was added to KEV
+    - kev_due_date: Remediation due date from KEV
+    - kev_ransomware_use: Known ransomware campaign use indicator
+    - kev_notes: Additional notes from KEV
+    
+    Deduplication: Keeps latest record per cve_id based on ingest_ts for both sources.
+    """
+    
+    # =========================================================================
+    # Process EPSS Data - Get latest record per CVE
+    # =========================================================================
+    epss_raw_df = spark.table(EPSS_RAW_TABLE)
+    
+    # Deduplicate EPSS: Keep latest record per cve_id based on ingest_ts
+    epss_window = Window.partitionBy("cve_id").orderBy(F.col("ingest_ts").desc())
+    
+    epss_df = epss_raw_df.withColumn(
+        "row_num",
+        F.row_number().over(epss_window)
+    ).filter(
+        F.col("row_num") == 1
+    ).select(
+        F.col("cve_id"),
+        F.col("epss_score"),
+        F.col("epss_percentile")
+    )
+    
+    # =========================================================================
+    # Process KEV Data - Parse JSON and get latest record per CVE
+    # =========================================================================
+    kev_raw_df = spark.table(KEV_RAW_TABLE)
+    
+    # Parse the raw_json column using the defined schema
+    kev_parsed_df = kev_raw_df.withColumn(
+        "parsed",
+        F.from_json(F.col("raw_json"), kev_vuln_schema)
+    )
+    
+    # Extract fields from parsed JSON
+    kev_extracted_df = kev_parsed_df.select(
+        F.coalesce(F.col("parsed.cveID"), F.col("cve_id")).alias("cve_id"),
+        F.to_date(F.col("parsed.dateAdded"), "yyyy-MM-dd").alias("kev_date_added"),
+        F.to_date(F.col("parsed.dueDate"), "yyyy-MM-dd").alias("kev_due_date"),
+        F.col("parsed.knownRansomwareCampaignUse").alias("kev_ransomware_use"),
+        F.col("parsed.notes").alias("kev_notes"),
+        F.col("ingest_ts")
+    )
+    
+    # Deduplicate KEV: Keep latest record per cve_id based on ingest_ts
+    kev_window = Window.partitionBy("cve_id").orderBy(F.col("ingest_ts").desc())
+    
+    kev_df = kev_extracted_df.withColumn(
+        "row_num",
+        F.row_number().over(kev_window)
+    ).filter(
+        F.col("row_num") == 1
+    ).select(
+        F.col("cve_id"),
+        F.col("kev_date_added"),
+        F.col("kev_due_date"),
+        F.col("kev_ransomware_use"),
+        F.col("kev_notes"),
+        F.lit(True).alias("kev_flag")  # Mark as in KEV
+    )
+    
+    # =========================================================================
+    # Join EPSS and KEV data
+    # =========================================================================
+    # Full outer join to capture all CVEs with either EPSS or KEV data
+    joined_df = epss_df.join(
+        kev_df,
+        on="cve_id",
+        how="full_outer"
+    )
+    
+    # Set kev_flag to False for CVEs not in KEV catalog
+    final_df = joined_df.select(
+        F.col("cve_id"),
+        F.col("epss_score"),
+        F.col("epss_percentile"),
+        F.coalesce(F.col("kev_flag"), F.lit(False)).alias("kev_flag"),
+        F.col("kev_date_added"),
+        F.col("kev_due_date"),
+        F.col("kev_ransomware_use"),
+        F.col("kev_notes")
+    )
+    
+    return final_df
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Pipeline Summary
 # MAGIC 
 # MAGIC This DLT pipeline creates the following Silver tables:
 # MAGIC 
-# MAGIC | Table | Records | Quality Expectations |
-# MAGIC |-------|---------|---------------------|
-# MAGIC | `cve_core` | Deduplicated CVEs | valid_cve_id, valid_cve_format, has_description |
+# MAGIC | Table | Description | Source | Quality Expectations |
+# MAGIC |-------|-------------|--------|---------------------|
+# MAGIC | `cve_core` | Core CVE metadata (ID, description, CVSS, CWE) | `nvd_raw` | valid_cve_id, valid_cve_format, has_description |
+# MAGIC | `cve_signals` | Risk signals (EPSS scores, KEV status) | `epss_raw`, `kev_raw` | valid_epss_range |
 # MAGIC 
 # MAGIC ### Data Quality Expectations
 # MAGIC 
-# MAGIC | Expectation | Rule | Type | Rationale |
-# MAGIC |-------------|------|------|-----------|
-# MAGIC | `valid_cve_id` | `cve_id IS NOT NULL` | expect | Every record must have a CVE ID |
-# MAGIC | `valid_cve_format` | `cve_id RLIKE '^CVE-[0-9]{4}-[0-9]+$'` | expect | CVE IDs must follow standard format |
-# MAGIC | `has_description` | `description IS NOT NULL` | expect_or_drop | Records without descriptions are not useful |
+# MAGIC | Table | Expectation | Rule | Type | Rationale |
+# MAGIC |-------|-------------|------|------|-----------|
+# MAGIC | `cve_core` | `valid_cve_id` | `cve_id IS NOT NULL` | expect | Every record must have a CVE ID |
+# MAGIC | `cve_core` | `valid_cve_format` | `cve_id RLIKE '^CVE-[0-9]{4}-[0-9]+$'` | expect | CVE IDs must follow standard format |
+# MAGIC | `cve_core` | `has_description` | `description IS NOT NULL` | expect_or_drop | Records without descriptions are not useful |
+# MAGIC | `cve_signals` | `valid_epss_range` | `epss_score IS NULL OR (epss_score >= 0 AND epss_score <= 1)` | expect | EPSS scores must be valid probabilities |
 # MAGIC 
 # MAGIC ### Next Steps
 # MAGIC 
 # MAGIC Future tasks will add additional Silver tables:
-# MAGIC - `cve_signals`: EPSS scores and KEV status
 # MAGIC - `cve_affected_products`: CPE data parsed to vendor/product
 # MAGIC - `cve_documents`: Denormalized text for Vector Search
