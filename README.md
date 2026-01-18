@@ -156,7 +156,7 @@ VulnPulse calculates a unified risk score (0-100) using a hierarchical evaluatio
 ```
 IF in CISA KEV (actively exploited)  → 90 + (epss_score × 10)     [90-100]
 ELSE IF EPSS > 0.5                   → 70 + (epss_score × 20)     [70-90]
-ELSE IF EPSS > 0.1                   → 40 + (epss_score × 100)    [50-90]
+ELSE IF EPSS > 0.1                   → 40 + (epss_score × 50)     [45-90]
 ELSE                                 → cvss_v3_score × 4          [0-40]
 ```
 
