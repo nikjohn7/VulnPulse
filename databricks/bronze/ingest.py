@@ -115,49 +115,64 @@ def list_files_in_path(path: str) -> list:
 
 def ingest_nvd():
     """Ingest NVD data from gzipped JSON files into Bronze table.
-    
+
     Each CVE item is stored with its raw JSON and metadata.
+    Processes and writes records per-file to avoid driver memory exhaustion.
     """
     print("=" * 60)
     print("Ingesting NVD Data")
     print("=" * 60)
-    
+
     # List NVD files
     nvd_files = list_files_in_path(NVD_PATH)
     nvd_files = [f for f in nvd_files if f.endswith('.json.gz')]
-    
+
     if not nvd_files:
         print(f"No NVD files found in {NVD_PATH}")
         return 0
-    
+
     print(f"Found {len(nvd_files)} NVD file(s)")
-    
-    all_records = []
-    
+
+    # Schema for NVD records
+    schema = StructType([
+        StructField("cve_id", StringType(), False),
+        StructField("raw_json", StringType(), False),
+        StructField("ingest_ts", TimestampType(), False),
+        StructField("source_file", StringType(), False),
+        StructField("snapshot_date", StringType(), True)
+    ])
+
+    total_records = 0
+
     for file_path in nvd_files:
         print(f"Processing: {file_path}")
-        
+
         # Extract filename from path
         filename = file_path.split('/')[-1]
         snapshot_date = extract_snapshot_date(filename)
-        
+
         # Read gzipped JSON file
         # Convert dbfs path to local path for reading
         local_path = file_path.replace("dbfs:", "/dbfs")
-        
+
         try:
             with gzip.open(local_path, 'rt', encoding='utf-8') as f:
                 data = json.load(f)
-            
+
             cve_items = data.get('CVE_Items', [])
             print(f"  Found {len(cve_items):,} CVE items")
-            
+
+            if not cve_items:
+                continue
+
+            # Process records for this file only
+            file_records = []
             for item in cve_items:
                 # Extract CVE ID from the nested structure
                 # NVD API 2.0 format: item['cve']['id']
                 # Legacy format: item['cve']['CVE_data_meta']['ID']
                 cve_id = None
-                
+
                 if 'cve' in item:
                     cve_data = item['cve']
                     if 'id' in cve_data:
@@ -166,45 +181,39 @@ def ingest_nvd():
                     elif 'CVE_data_meta' in cve_data:
                         # Legacy 1.1 format
                         cve_id = cve_data['CVE_data_meta'].get('ID')
-                
+
                 if cve_id:
-                    all_records.append({
+                    file_records.append({
                         'cve_id': cve_id,
                         'raw_json': json.dumps(item),
                         'ingest_ts': ingest_timestamp,
                         'source_file': filename,
                         'snapshot_date': snapshot_date
                     })
-                    
+
+            if file_records:
+                # Create DataFrame and write for this file
+                df = spark.createDataFrame(file_records, schema)
+                df = df.withColumn("snapshot_date", F.to_date(F.col("snapshot_date"), "yyyy-MM-dd"))
+                df.write.mode("append").saveAsTable(NVD_TABLE)
+
+                total_records += len(file_records)
+                print(f"  ✓ Wrote {len(file_records):,} records")
+
+                # Clear the list to free memory
+                del file_records
+
         except Exception as e:
             print(f"  Error processing {filename}: {e}")
             continue
-    
-    if not all_records:
+
+    if total_records == 0:
         print("No NVD records to ingest")
         return 0
-    
-    # Create DataFrame
-    schema = StructType([
-        StructField("cve_id", StringType(), False),
-        StructField("raw_json", StringType(), False),
-        StructField("ingest_ts", TimestampType(), False),
-        StructField("source_file", StringType(), False),
-        StructField("snapshot_date", StringType(), True)
-    ])
-    
-    df = spark.createDataFrame(all_records, schema)
-    
-    # Convert snapshot_date string to date type
-    df = df.withColumn("snapshot_date", F.to_date(F.col("snapshot_date"), "yyyy-MM-dd"))
-    
-    # Write to table in append mode
-    df.write.mode("append").saveAsTable(NVD_TABLE)
-    
-    record_count = len(all_records)
-    print(f"✓ Ingested {record_count:,} NVD records into {NVD_TABLE}")
-    
-    return record_count
+
+    print(f"✓ Ingested {total_records:,} NVD records into {NVD_TABLE}")
+
+    return total_records
 
 # Execute NVD ingestion
 nvd_count = ingest_nvd()
