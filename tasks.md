@@ -7,10 +7,9 @@
 ## Task Queue
 
 ### CURRENT
-- 3.4: Add Silver DLT Pipeline - CVE Documents
+- 3.5: Document Data Quality Expectations
 
 ### TODO
-- 3.5: Document Data Quality Expectations
 - 4.1: Create Gold Enriched Vulnerability Table
 - 4.2: Create Gold Aggregation Tables
 - 4.3: Create Vector Search Index Setup
@@ -41,6 +40,7 @@
 - 3.1: Create Silver DLT Pipeline - CVE Core ✓
 - 3.2: Add Silver DLT Pipeline - CVE Signals ✓
 - 3.3: Add Silver DLT Pipeline - CVE Affected Products ✓
+- 3.4: Add Silver DLT Pipeline - CVE Documents ✓
 
 ---
 

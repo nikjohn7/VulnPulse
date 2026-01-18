@@ -11,6 +11,7 @@
 # MAGIC | `cve_core` | Core CVE metadata (ID, description, CVSS, CWE) | `nvd_raw` |
 # MAGIC | `cve_signals` | Risk signals (EPSS scores, KEV status) | `epss_raw`, `kev_raw` |
 # MAGIC | `cve_affected_products` | Affected vendors/products from CPE data | `nvd_raw` |
+# MAGIC | `cve_documents` | Denormalized text for Vector Search (CDF enabled) | All Silver tables |
 # MAGIC 
 # MAGIC ## Data Quality Expectations
 # MAGIC - `valid_cve_id`: CVE ID must not be null
@@ -19,6 +20,7 @@
 # MAGIC - `valid_epss_range`: EPSS score must be between 0 and 1 (or null)
 # MAGIC - `valid_cpe_uri`: CPE URI must not be null
 # MAGIC - `has_vendor`: Vendor must not be null (records dropped if violated)
+# MAGIC - `has_document_text`: Document text must be >50 chars (records dropped if violated)
 
 # COMMAND ----------
 
@@ -577,18 +579,172 @@ def cve_affected_products():
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## CVE Documents Table
+# MAGIC
+# MAGIC Denormalized CVE records optimized for Vector Search. Combines data from all Silver tables
+# MAGIC into a single document with searchable text and metadata for filtering.
+# MAGIC
+# MAGIC **Key Features**:
+# MAGIC - Change Data Feed enabled (required for Delta Sync Vector Search index)
+# MAGIC - `document_text` column for embedding generation
+# MAGIC - Metadata columns for filtered similarity search
+# MAGIC
+# MAGIC **Data Sources**:
+# MAGIC - `cve_core`: Description, CVSS, CWE
+# MAGIC - `cve_signals`: EPSS, KEV status
+# MAGIC - `cve_affected_products`: Vendors and products (aggregated)
+
+# COMMAND ----------
+
+@dlt.table(
+    name="cve_documents",
+    comment="Denormalized CVE documents for Vector Search. Combines core metadata, risk signals, and affected products into searchable documents.",
+    table_properties={
+        "quality": "silver",
+        "pipelines.autoOptimize.managed": "true",
+        "delta.enableChangeDataFeed": "true"  # Required for Vector Search Delta Sync Index
+    }
+)
+@dlt.expect("valid_cve_id", "cve_id IS NOT NULL")
+@dlt.expect_or_drop("has_document_text", "LENGTH(document_text) > 50")
+def cve_documents():
+    """
+    Creates the cve_documents Silver table for Vector Search.
+
+    Combines data from:
+    - cve_core: Core CVE metadata
+    - cve_signals: EPSS and KEV risk signals
+    - cve_affected_products: Vendor/product information (aggregated)
+
+    Creates:
+    - document_text: Searchable text combining description, vendors, products, CWE
+    - Metadata columns for filtered similarity search
+
+    Output columns:
+    - cve_id: CVE identifier (primary key)
+    - document_text: Combined text for embedding generation
+    - published: Publication timestamp
+    - cvss_v3_score: CVSS v3.x base score
+    - cvss_v3_severity: CVSS v3.x severity rating
+    - epss_score: EPSS probability score
+    - kev_flag: Boolean indicating KEV status
+    - vendors_str: Pipe-separated list of affected vendors
+    - products_str: Pipe-separated list of affected products
+    - cwe_id: Primary CWE identifier
+
+    Change Data Feed is enabled to support Delta Sync Vector Search index.
+    """
+
+    # =========================================================================
+    # Read Silver tables using dlt.read()
+    # =========================================================================
+
+    # Read cve_core table
+    core_df = dlt.read("cve_core")
+
+    # Read cve_signals table
+    signals_df = dlt.read("cve_signals")
+
+    # Read cve_affected_products table
+    products_df = dlt.read("cve_affected_products")
+
+    # =========================================================================
+    # Aggregate affected products per CVE
+    # =========================================================================
+    # Create pipe-separated lists of vendors and products for each CVE
+
+    products_agg_df = products_df.groupBy("cve_id").agg(
+        # Collect distinct vendors and concatenate with pipe separator
+        F.concat_ws(
+            " | ",
+            F.array_distinct(F.collect_list(F.col("vendor")))
+        ).alias("vendors_str"),
+        # Collect distinct products and concatenate with pipe separator
+        F.concat_ws(
+            " | ",
+            F.array_distinct(F.collect_list(F.col("product")))
+        ).alias("products_str")
+    )
+
+    # =========================================================================
+    # Join all data sources
+    # =========================================================================
+
+    # Join cve_core with cve_signals
+    joined_df = core_df.join(
+        signals_df,
+        on="cve_id",
+        how="left"
+    )
+
+    # Join with aggregated products
+    joined_df = joined_df.join(
+        products_agg_df,
+        on="cve_id",
+        how="left"
+    )
+
+    # =========================================================================
+    # Create document_text column
+    # =========================================================================
+    # Combine: description | vendors | products | CWE
+    # Use COALESCE to handle nulls gracefully
+
+    document_df = joined_df.withColumn(
+        "document_text",
+        F.concat_ws(
+            " | ",
+            F.col("description"),
+            F.when(
+                F.col("vendors_str").isNotNull() & (F.col("vendors_str") != ""),
+                F.concat(F.lit("Affected vendors: "), F.col("vendors_str"))
+            ),
+            F.when(
+                F.col("products_str").isNotNull() & (F.col("products_str") != ""),
+                F.concat(F.lit("Affected products: "), F.col("products_str"))
+            ),
+            F.when(
+                F.col("cwe_id").isNotNull() & (F.col("cwe_id") != ""),
+                F.concat(F.lit("Weakness: "), F.col("cwe_id"))
+            )
+        )
+    )
+
+    # =========================================================================
+    # Select final columns
+    # =========================================================================
+
+    final_df = document_df.select(
+        "cve_id",
+        "document_text",
+        "published",
+        "cvss_v3_score",
+        "cvss_v3_severity",
+        "epss_score",
+        F.coalesce(F.col("kev_flag"), F.lit(False)).alias("kev_flag"),
+        "vendors_str",
+        "products_str",
+        "cwe_id"
+    )
+
+    return final_df
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Pipeline Summary
-# MAGIC 
+# MAGIC
 # MAGIC This DLT pipeline creates the following Silver tables:
-# MAGIC 
+# MAGIC
 # MAGIC | Table | Description | Source | Quality Expectations |
 # MAGIC |-------|-------------|--------|---------------------|
 # MAGIC | `cve_core` | Core CVE metadata (ID, description, CVSS, CWE) | `nvd_raw` | valid_cve_id, valid_cve_format, has_description |
 # MAGIC | `cve_signals` | Risk signals (EPSS scores, KEV status) | `epss_raw`, `kev_raw` | valid_epss_range |
 # MAGIC | `cve_affected_products` | Affected vendors/products from CPE data | `nvd_raw` | valid_cve_id, valid_cpe_uri, has_vendor |
-# MAGIC 
+# MAGIC | `cve_documents` | Denormalized text for Vector Search | All Silver tables | valid_cve_id, has_document_text |
+# MAGIC
 # MAGIC ### Data Quality Expectations
-# MAGIC 
+# MAGIC
 # MAGIC | Table | Expectation | Rule | Type | Rationale |
 # MAGIC |-------|-------------|------|------|-----------|
 # MAGIC | `cve_core` | `valid_cve_id` | `cve_id IS NOT NULL` | expect | Every record must have a CVE ID |
@@ -598,8 +754,30 @@ def cve_affected_products():
 # MAGIC | `cve_affected_products` | `valid_cve_id` | `cve_id IS NOT NULL` | expect | Every record must have a CVE ID |
 # MAGIC | `cve_affected_products` | `valid_cpe_uri` | `cpe_uri IS NOT NULL` | expect | Every record must have a CPE URI |
 # MAGIC | `cve_affected_products` | `has_vendor` | `vendor IS NOT NULL` | expect_or_drop | Records without vendor are not useful for product analysis |
-# MAGIC 
-# MAGIC ### Next Steps
-# MAGIC 
-# MAGIC Future tasks will add additional Silver tables:
-# MAGIC - `cve_documents`: Denormalized text for Vector Search
+# MAGIC | `cve_documents` | `valid_cve_id` | `cve_id IS NOT NULL` | expect | Every document must have a CVE ID |
+# MAGIC | `cve_documents` | `has_document_text` | `LENGTH(document_text) > 50` | expect_or_drop | Documents must have sufficient text for meaningful embeddings |
+# MAGIC
+# MAGIC ### Vector Search Integration
+# MAGIC
+# MAGIC The `cve_documents` table is designed for use with Databricks Vector Search:
+# MAGIC
+# MAGIC - **Change Data Feed**: Enabled via `delta.enableChangeDataFeed` table property
+# MAGIC - **Primary Key**: `cve_id` column uniquely identifies each document
+# MAGIC - **Embedding Source**: `document_text` column contains the text to be embedded
+# MAGIC - **Metadata Filters**: `cvss_v3_score`, `cvss_v3_severity`, `epss_score`, `kev_flag`, `vendors_str`, `products_str`, `cwe_id`
+# MAGIC
+# MAGIC To create a Delta Sync Vector Search index on this table:
+# MAGIC ```python
+# MAGIC from databricks.vector_search.client import VectorSearchClient
+# MAGIC
+# MAGIC client = VectorSearchClient()
+# MAGIC index = client.create_delta_sync_index(
+# MAGIC     endpoint_name="vulnpulse_vs_endpoint",
+# MAGIC     index_name="vulnpulse.silver.cve_documents_index",
+# MAGIC     source_table_name="vulnpulse.silver.cve_documents",
+# MAGIC     pipeline_type="TRIGGERED",
+# MAGIC     primary_key="cve_id",
+# MAGIC     embedding_source_column="document_text",
+# MAGIC     embedding_model_endpoint_name="databricks-gte-large-en"
+# MAGIC )
+# MAGIC ```
