@@ -61,3 +61,6 @@ htmlcov/
 
 # Learning folder
 learning/
+
+# AI tools
+.kiro/
