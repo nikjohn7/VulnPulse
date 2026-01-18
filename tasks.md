@@ -7,10 +7,9 @@
 ## Task Queue
 
 ### CURRENT
-- 1.2: Create KEV Fetcher
+- 1.3: Create EPSS Fetcher
 
 ### TODO
-- 1.3: Create EPSS Fetcher
 - 1.4: Create Unified Fetch Script
 - 2.1: Create Unity Catalog Setup Script
 - 2.2: Create Bronze Ingestion Notebook
@@ -41,6 +40,7 @@
 - 0.3: Create Main README ✓
 - 0.4: Create Makefile ✓
 - 1.1: Create NVD Fetcher ✓
+- 1.2: Create KEV Fetcher ✓
 
 ---
 
