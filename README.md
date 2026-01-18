@@ -56,7 +56,7 @@ flowchart LR
 
 ### Prerequisites
 
-- Python 3.9+
+- Python 3.10+
 - Databricks workspace with Unity Catalog enabled
 - Databricks CLI configured
 - Git

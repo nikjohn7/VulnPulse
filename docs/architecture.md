@@ -106,7 +106,7 @@ Streamlit App (conversational UI)
 ```
 KEV = true           → 90 + (epss_score × 10)     [90-100]
 EPSS > 0.5           → 70 + (epss_score × 20)     [70-90]
-EPSS > 0.1           → 40 + (epss_score × 100)    [40-50]
+EPSS > 0.1           → 40 + (epss_score × 100)    [50-90]
 Otherwise            → cvss_v3_score × 4          [0-40]
 ```
 **Risk Tiers**: CRITICAL (≥90), HIGH (≥70), MEDIUM (≥40), LOW (<40)
