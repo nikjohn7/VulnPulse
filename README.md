@@ -151,14 +151,20 @@ vulnpulse/
 
 ## 🧮 Risk Scoring
 
-VulnPulse calculates a unified risk score (0-100) combining multiple signals:
+VulnPulse calculates a unified risk score (0-100) using a hierarchical evaluation:
 
-| Condition | Score Range | Risk Tier |
-|-----------|-------------|-----------|
-| In CISA KEV (actively exploited) | 90-100 | 🔴 CRITICAL |
-| EPSS > 0.5 (high exploitation probability) | 70-90 | 🟠 HIGH |
-| EPSS > 0.1 (moderate probability) | 50-90 | 🟡 MEDIUM |
-| CVSS-based (technical severity) | 0-40 | 🟢 LOW |
+```
+IF in CISA KEV (actively exploited)  → 90 + (epss_score × 10)     [90-100]
+ELSE IF EPSS > 0.5                   → 70 + (epss_score × 20)     [70-90]
+ELSE IF EPSS > 0.1                   → 40 + (epss_score × 100)    [50-90]
+ELSE                                 → cvss_v3_score × 4          [0-40]
+```
+
+**Risk Tiers** (based on final score):
+- 🔴 **CRITICAL** (≥90): Actively exploited vulnerabilities
+- 🟠 **HIGH** (70-89): High exploitation probability
+- 🟡 **MEDIUM** (40-69): Moderate exploitation probability
+- 🟢 **LOW** (<40): CVSS-based technical severity
 
 ## 🤖 Agent Capabilities
 
