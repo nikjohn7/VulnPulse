@@ -7,12 +7,9 @@
 ## Task Queue
 
 ### CURRENT
-- 0.3: Create Main README
+- 0.4: Create Makefile
 
 ### TODO
-- 0.4: Create Makefile
-- 0.3: Create Main README
-- 0.4: Create Makefile
 - 1.1: Create NVD Fetcher
 - 1.2: Create KEV Fetcher
 - 1.3: Create EPSS Fetcher
@@ -43,6 +40,7 @@
 ### DONE
 - 0.1: Initialize Repository Structure ✓
 - 0.2: Create Requirements Files ✓
+- 0.3: Create Main README ✓
 
 ---
 
