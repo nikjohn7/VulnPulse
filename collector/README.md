@@ -119,7 +119,7 @@ data/raw/
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.10+
 - `requests` library (included in project requirements.txt)
 
 ```bash

@@ -43,8 +43,8 @@ def fetch_all() -> Tuple[int, int]:
     print("=" * 60)
     print()
     
-    for name, fetcher in sources:
-        print(f"[{successful + 1}/{total}] Fetching {name}...")
+    for idx, (name, fetcher) in enumerate(sources, start=1):
+        print(f"[{idx}/{total}] Fetching {name}...")
         print("-" * 40)
         
         try:
