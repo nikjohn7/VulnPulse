@@ -7,13 +7,9 @@
 ## Task Queue
 
 ### CURRENT
-- 1.1: Create NVD Fetcher
+- 2.1: Create Unity Catalog Setup Script
 
 ### TODO
-- 1.2: Create KEV Fetcher
-- 1.3: Create EPSS Fetcher
-- 1.4: Create Unified Fetch Script
-- 2.1: Create Unity Catalog Setup Script
 - 2.2: Create Bronze Ingestion Notebook
 - 3.1: Create Silver DLT Pipeline - CVE Core
 - 3.2: Add Silver DLT Pipeline - CVE Signals
@@ -41,6 +37,10 @@
 - 0.2: Create Requirements Files ✓
 - 0.3: Create Main README ✓
 - 0.4: Create Makefile ✓
+- 1.1: Create NVD Fetcher ✓
+- 1.2: Create KEV Fetcher ✓
+- 1.3: Create EPSS Fetcher ✓
+- 1.4: Create Unified Fetch Script ✓
 
 ---
 
