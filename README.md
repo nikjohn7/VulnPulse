@@ -157,7 +157,7 @@ VulnPulse calculates a unified risk score (0-100) combining multiple signals:
 |-----------|-------------|-----------|
 | In CISA KEV (actively exploited) | 90-100 | 🔴 CRITICAL |
 | EPSS > 0.5 (high exploitation probability) | 70-90 | 🟠 HIGH |
-| EPSS > 0.1 (moderate probability) | 40-50 | 🟡 MEDIUM |
+| EPSS > 0.1 (moderate probability) | 50-90 | 🟡 MEDIUM |
 | CVSS-based (technical severity) | 0-40 | 🟢 LOW |
 
 ## 🤖 Agent Capabilities
