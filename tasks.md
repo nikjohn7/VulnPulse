@@ -7,14 +7,9 @@
 ## Task Queue
 
 ### CURRENT
-_(none - start with Task 0.1)_
+- 1.1: Create NVD Fetcher
 
 ### TODO
-- 0.1: Initialize Repository Structure
-- 0.2: Create Requirements Files
-- 0.3: Create Main README
-- 0.4: Create Makefile
-- 1.1: Create NVD Fetcher
 - 1.2: Create KEV Fetcher
 - 1.3: Create EPSS Fetcher
 - 1.4: Create Unified Fetch Script
@@ -42,7 +37,10 @@ _(none - start with Task 0.1)_
 - 6.3: Create Demo Script and Final Docs
 
 ### DONE
-_(none yet)_
+- 0.1: Initialize Repository Structure ✓
+- 0.2: Create Requirements Files ✓
+- 0.3: Create Main README ✓
+- 0.4: Create Makefile ✓
 
 ---
 
@@ -306,7 +304,7 @@ vulnpulse/
   ```
   - KEV=true: 90 + (epss_score * 10)  → range 90-100
   - EPSS > 0.5: 70 + (epss_score * 20) → range 70-90
-  - EPSS > 0.1: 40 + (epss_score * 100) → range 40-50ish
+  - EPSS > 0.1: 40 + (epss_score * 50) → range 45-90
   - Otherwise: cvss_v3_score * 4 → range 0-40
   ```
 - Add `risk_tier`: CRITICAL (≥90), HIGH (≥70), MEDIUM (≥40), LOW (<40)
