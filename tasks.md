@@ -7,10 +7,9 @@
 ## Task Queue
 
 ### CURRENT
-- 4.1: Create Gold Enriched Vulnerability Table
+- 4.2: Create Gold Aggregation Tables
 
 ### TODO
-- 4.2: Create Gold Aggregation Tables
 - 4.3: Create Vector Search Index Setup
 - 4.4: Create Vector Search Query Utilities
 - 5.1: Create CVE Lookup Tool
@@ -41,6 +40,7 @@
 - 3.3: Add Silver DLT Pipeline - CVE Affected Products ✓
 - 3.4: Add Silver DLT Pipeline - CVE Documents ✓
 - 3.5: Document Data Quality Expectations ✓
+- 4.1: Create Gold Enriched Vulnerability Table ✓
 
 ---
 
